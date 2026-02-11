@@ -18,6 +18,9 @@ CPU vs GPU matrix multiplication benchmarks, exploring performance differences a
 | `matmul_vram_limit.cu` | Finds the GPU's max matrix size before VRAM runs out |
 | `matmul_vram_narrow.cu` | Narrows down the exact VRAM breaking point |
 | `matmul_block_sweep.cu` | Tests block sizes 4x4 through 32x32 on naive + tiled kernels |
+| `matmul_cpu_simd.c` | AVX2+FMA SIMD matmul, single-threaded and OpenMP |
+| `matmul_profile.cu` | Minimal binary for GPU profiling with ncu |
+| `cudaMemoryHierarchy.md` | Guide to GPU memory hierarchy, coalescing, bank conflicts, ILP, spilling |
 | `results.md` | Full benchmark results and analysis |
 
 ## Building
@@ -36,6 +39,9 @@ gcc -O2 -fopenmp -o matmul_cpu_parallel matmul_cpu_parallel.c -lm
 
 # CPU comparison (all 3)
 gcc -O2 -fopenmp -o matmul_cpu_compare matmul_cpu_compare.c -lpthread -lm
+
+# CPU SIMD (AVX2+FMA, requires Intel/AMD with AVX2 support)
+gcc -O2 -mavx2 -mfma -fopenmp -o matmul_cpu_simd matmul_cpu_simd.c -lm -lpthread
 
 # GPU (adjust cuda version and arch to match your setup)
 /usr/local/cuda-12.4/bin/nvcc -O2 -arch=sm_86 -o matmul_gpu matmul_gpu.cu
@@ -58,6 +64,7 @@ Change `-arch=sm_86` to match your GPU (e.g. `sm_75` for Turing, `sm_89` for Ada
 ./matmul_stress       # Full stress test up to 16384
 ./matmul_vram_limit   # Find GPU VRAM ceiling
 ./matmul_block_sweep  # Block size sweep (4x4 to 32x32, naive + tiled)
+./matmul_cpu_simd     # AVX2+FMA SIMD vs scalar (single-threaded and OpenMP)
 ```
 
 ## Results (RTX 3060 Ti, 8 GB)
@@ -68,8 +75,9 @@ See [results.md](results.md) for full data. Highlights:
 - GPU tiled kernel: **~1,300 GFLOP/s** (consistent across sizes)
 - CPU single-threaded: **0.4–4.6 GFLOP/s**
 - CPU pthreads/OpenMP (20 threads): **4.7–25 GFLOP/s** (5–17x over single-threaded)
-- GPU speedup vs best CPU: **~250x** at 4096x4096
-- GPU speedup vs single-threaded CPU: **1,000–3,200x**
+- CPU AVX2+FMA+OpenMP (20 threads): **109–195 GFLOP/s** (up to 256x over scalar)
+- GPU speedup vs best CPU (SIMD+OpenMP): **~11x** at 4096x4096
+- GPU speedup vs scalar CPU: **~2,858x**
 - GPU max size: **22,528 x 22,528** (limited by VRAM)
 - CPU max practical size: **~4,096 x 4,096** (limited by O(N^3) time)
 

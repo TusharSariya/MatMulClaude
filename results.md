@@ -69,6 +69,33 @@ Single-threaded vs pthreads (manual thread pool) vs OpenMP (`#pragma omp paralle
 
 ---
 
+## CPU SIMD: AVX2 + FMA (i5-13600K)
+
+AVX2 processes 8 floats per instruction (256-bit). FMA (fused multiply-add) computes `a * b + c` in a single instruction.
+The SIMD kernel transposes B for coalesced access, then uses `_mm256_fmadd_ps` in the inner loop.
+
+| N | Scalar | GFLOP/s | AVX2+FMA (1 thread) | GFLOP/s | Speedup | AVX2+FMA+OpenMP (20 threads) | GFLOP/s | Speedup | Check |
+|-----:|-------:|--------:|--------------------:|--------:|--------:|-----------------------------:|--------:|--------:|:-----:|
+| 256 | 19.5 ms | 1.7 | 1.1 ms | 29.2 | 16.9x | 0.5 ms | 72.7 | 42.2x | PASS |
+| 512 | 99.0 ms | 2.7 | 7.9 ms | 34.1 | 12.6x | 1.6 ms | 166.4 | 61.4x | PASS |
+| 1024 | 2,405 ms | 0.9 | 79.3 ms | 27.1 | 30.3x | 11.0 ms | 195.2 | 218.6x | PASS |
+| 2048 | 20,525 ms | 0.8 | 721.0 ms | 23.8 | 28.5x | 94.8 ms | 181.3 | 216.6x | PASS |
+| 4096 | 323,007 ms | 0.4 | 10,162 ms | 13.5 | 31.8x | 1,262 ms | 108.9 | 255.9x | PASS |
+
+### Full Comparison at 4096x4096 (every implementation)
+
+| Implementation | Time | GFLOP/s | vs Scalar | vs GPU |
+|---|---:|---:|---:|---:|
+| CPU scalar (1 thread) | 323.0 s | 0.4 | 1x | 2,858x slower |
+| CPU OpenMP (20 threads) | 28.4 s | 4.8 | 11.4x | 251x slower |
+| CPU AVX2+FMA (1 thread) | 10.2 s | 13.5 | 31.8x | 90x slower |
+| CPU AVX2+FMA+OpenMP (20 threads) | 1.26 s | 108.9 | 255.9x | **11.2x slower** |
+| GPU tiled 16x16 (RTX 3060 Ti) | 0.113 s | 1,212 | 2,858x | 1x |
+
+SIMD+multithreading brings the CPU within **11x of the GPU** — compared to 3,193x without either optimization.
+
+---
+
 ## Breaking Points
 
 ### GPU
@@ -352,3 +379,5 @@ More registers per thread → fewer threads per SM → fewer warps to hide laten
 10. **Both kernels have clean memory access patterns** — fully coalesced global loads and zero shared memory bank conflicts. The tiled kernel's advantage is purely from reducing global memory traffic by 16x (BLOCK_SIZE), not from fixing bad access patterns.
 11. **Zero register spills across all kernel variants.** At 38–40 registers per thread, both kernels fit comfortably and achieve 100% occupancy at 16x16 block size (6 blocks × 256 threads = 1,536 threads per SM).
 12. **The ~7% gap from theoretical peak** (1,300 vs ~1,400 GFLOP/s) is from warp scheduling overhead, instruction pipeline bubbles, and the serial dependency chain in `sum += a * b` limiting ILP within each warp.
+13. **AVX2+FMA SIMD is a game-changer for CPU.** Single-threaded SIMD (8 floats/op + fused multiply-add) delivers 13.5–34 GFLOP/s — a 13–32x speedup over scalar, far exceeding the theoretical 8x from wider registers alone thanks to better cache behavior from transposing B.
+14. **AVX2+FMA+OpenMP (20 threads) reaches 109–195 GFLOP/s** — a 256x improvement over scalar and brings the CPU within **11x of the GPU** at 4096x4096. The gap from 3,193x to 11x shows how much scalar code leaves on the table.

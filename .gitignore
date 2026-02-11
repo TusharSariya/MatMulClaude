@@ -10,3 +10,4 @@ matmul_vram_limit
 matmul_vram_narrow
 matmul_block_sweep
 matmul_profile
+matmul_cpu_simd
