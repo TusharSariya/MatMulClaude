@@ -9,6 +9,9 @@ CPU vs GPU matrix multiplication benchmarks, exploring performance differences a
 | File | Description |
 |---|---|
 | `matmul_cpu.c` | CPU-only matrix multiply (single-threaded, pure C) |
+| `matmul_cpu_mt.c` | CPU matrix multiply with pthreads (manual thread pool) |
+| `matmul_cpu_parallel.c` | CPU matrix multiply with OpenMP |
+| `matmul_cpu_compare.c` | Benchmark comparing all 3 CPU implementations |
 | `matmul_gpu.cu` | GPU matrix multiply with naive and tiled (shared memory) kernels |
 | `matmul_bench.cu` | Combined benchmark — runs CPU and GPU side-by-side, verifies correctness |
 | `matmul_stress.cu` | Stress test — scales from 256 to 16384, auto-skips CPU when too slow |
@@ -21,8 +24,17 @@ CPU vs GPU matrix multiplication benchmarks, exploring performance differences a
 Requires GCC and the CUDA toolkit. Match the toolkit version to your driver — check with `nvidia-smi`.
 
 ```bash
-# CPU
+# CPU (single-threaded)
 gcc -O2 -o matmul_cpu matmul_cpu.c -lm
+
+# CPU (pthreads)
+gcc -O2 -o matmul_cpu_mt matmul_cpu_mt.c -lpthread -lm
+
+# CPU (OpenMP)
+gcc -O2 -fopenmp -o matmul_cpu_parallel matmul_cpu_parallel.c -lm
+
+# CPU comparison (all 3)
+gcc -O2 -fopenmp -o matmul_cpu_compare matmul_cpu_compare.c -lpthread -lm
 
 # GPU (adjust cuda version and arch to match your setup)
 /usr/local/cuda-12.4/bin/nvcc -O2 -arch=sm_86 -o matmul_gpu matmul_gpu.cu
@@ -35,7 +47,10 @@ Change `-arch=sm_86` to match your GPU (e.g. `sm_75` for Turing, `sm_89` for Ada
 ## Running
 
 ```bash
-./matmul_cpu          # CPU only (1024x1024)
+./matmul_cpu          # CPU single-threaded (1024x1024)
+./matmul_cpu_mt       # CPU pthreads (1024x1024)
+./matmul_cpu_parallel # CPU OpenMP (1024x1024)
+./matmul_cpu_compare  # All 3 CPU implementations head-to-head (256 to 4096)
 ./matmul_gpu          # GPU only — naive + tiled kernels
 ./matmul_bench        # CPU vs GPU comparison (256 to 2048)
 ./matmul_stress       # Full stress test up to 16384
@@ -48,7 +63,9 @@ See [results.md](results.md) for full data. Highlights:
 
 - GPU tiled kernel: **~1,300 GFLOP/s** (consistent across sizes)
 - CPU single-threaded: **0.4–4.6 GFLOP/s**
-- GPU speedup: **1,000–3,200x** depending on matrix size
+- CPU pthreads/OpenMP (20 threads): **4.7–25 GFLOP/s** (5–17x over single-threaded)
+- GPU speedup vs best CPU: **~250x** at 4096x4096
+- GPU speedup vs single-threaded CPU: **1,000–3,200x**
 - GPU max size: **22,528 x 22,528** (limited by VRAM)
 - CPU max practical size: **~4,096 x 4,096** (limited by O(N^3) time)
 

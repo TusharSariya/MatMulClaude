@@ -1,7 +1,7 @@
 # Matrix Multiplication: CPU vs GPU Benchmark Results
 
 **Hardware:** Intel CPU (20 threads) · NVIDIA RTX 3060 Ti (8 GB VRAM) · 32 GB System RAM
-**Software:** GCC -O2 · CUDA 12.4 · sm_86 · single-threaded CPU
+**Software:** GCC -O2 · CUDA 12.4 · sm_86 · pthreads · OpenMP
 **Date:** 2026-02-11
 
 ---
@@ -46,6 +46,29 @@ CPU was skipped after 4096x4096 (exceeded 2-minute timeout).
 
 ---
 
+## CPU Implementations Comparison (20 threads)
+
+Single-threaded vs pthreads (manual thread pool) vs OpenMP (`#pragma omp parallel for collapse(2)`).
+
+| N | Single-threaded | GFLOP/s | Pthreads | GFLOP/s | Speedup | OpenMP | GFLOP/s | Speedup | Check |
+|-----:|----------------:|--------:|---------:|--------:|--------:|-------:|--------:|--------:|:-----:|
+| 256 | 17.4 ms | 1.9 | 1.4 ms | 23.8 | 12.3x | 2.6 ms | 12.8 | 6.6x | PASS |
+| 512 | 58.6 ms | 4.6 | 10.6 ms | 25.4 | 5.5x | 10.6 ms | 25.3 | 5.5x | PASS |
+| 1024 | 2,421 ms | 0.9 | 150.6 ms | 14.3 | 16.1x | 136.9 ms | 15.7 | 17.7x | PASS |
+| 2048 | 18,770 ms | 0.9 | 2,488 ms | 6.9 | 7.5x | 2,458 ms | 7.0 | 7.6x | PASS |
+| 4096 | 360,429 ms | 0.4 | 28,952 ms | 4.7 | 12.4x | 28,446 ms | 4.8 | 12.7x | PASS |
+
+### CPU vs CPU vs GPU at 4096x4096
+
+| Implementation | Time | GFLOP/s | vs Single-threaded |
+|---|---:|---:|---:|
+| CPU single-threaded | 360.4 s | 0.4 | 1x |
+| CPU pthreads (20 threads) | 29.0 s | 4.7 | 12.4x |
+| CPU OpenMP (20 threads) | 28.4 s | 4.8 | 12.7x |
+| GPU tiled (RTX 3060 Ti) | 0.113 s | 1,212 | 3,193x |
+
+---
+
 ## Breaking Points
 
 ### GPU
@@ -80,3 +103,6 @@ CPU was skipped after 4096x4096 (exceeded 2-minute timeout).
 4. **Tiled kernel is ~30% faster** than the naive GPU kernel due to shared memory reducing global memory traffic.
 5. **GPU wall is VRAM.** The RTX 3060 Ti can compute a 22,528x22,528 multiply in 17 seconds but cannot fit 23,040x23,040.
 6. **CPU wall is time.** It has plenty of RAM (32 GB) but the O(N^3) algorithm makes large sizes impractical without multithreading or BLAS libraries.
+7. **Multithreading helps but doesn't close the gap.** Pthreads and OpenMP deliver 5–17x speedup over single-threaded (on 20 cores), but the GPU is still **250x faster** than the best CPU result at 4096x4096.
+8. **Pthreads vs OpenMP are nearly identical** in performance. OpenMP has a slight edge at larger sizes due to `collapse(2)` distributing work more evenly, while pthreads only splits by rows.
+9. **CPU parallel scaling is sublinear.** 20 threads yield 7–17x speedup (not 20x) due to memory bandwidth saturation and cache contention at larger sizes.
