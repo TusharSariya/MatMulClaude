@@ -1,0 +1,12 @@
+# Compiled binaries
+matmul_cpu
+matmul_cpu_mt
+matmul_cpu_parallel
+matmul_cpu_compare
+matmul_gpu
+matmul_bench
+matmul_stress
+matmul_vram_limit
+matmul_vram_narrow
+matmul_block_sweep
+matmul_profile
