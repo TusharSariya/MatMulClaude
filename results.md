@@ -481,3 +481,55 @@ Measured over 8 GEMM jobs (`N=1024`) including H2D + kernel + D2H:
 2. **Kernel-level improvements still matter for custom paths.** Register tiling and double buffering gave meaningful gains over a plain tiled kernel.
 3. **End-to-end optimization is mandatory.** Pinned memory + stream overlap significantly improved throughput over pageable synchronous flows.
 4. **Compiler/resource tuning has non-linear behavior.** Register caps and launch bounds can help or hurt depending on exact code shape and runtime conditions.
+
+---
+
+## cuBLAS Learning-Path Benchmark Matrix (2026-02-11)
+
+All numbers below are from the updated `matmul_optimizations.cu` harness.
+Square runs use `N=512, 1024, 2048`; rectangular validation uses `M=768, N=1024, K=512`.
+
+### Kernel-Only Throughput (Method 1 table)
+
+| Size | Tiled baseline | cuBLAS SGEMM | cuBLAS TensorOp FP16 | SGEMM Max Error | TensorOp Max Error |
+|---:|---:|---:|---:|---:|---:|
+| 512 | 1454.2 GFLOP/s | 7322.5 GFLOP/s | 21487.2 GFLOP/s | 1.983643e-04 | 6.907654e-02 |
+| 1024 | 897.5 GFLOP/s | 6159.0 GFLOP/s | 28659.4 GFLOP/s | 5.798340e-04 | 1.362000e-01 |
+| 2048 | 895.1 GFLOP/s | 6608.9 GFLOP/s | 21159.3 GFLOP/s | 1.831055e-04 | 2.753296e-01 |
+
+### Rectangular Workload Validation (`M=768, N=1024, K=512`)
+
+| Variant | Time (ms) | Throughput | Max Abs Error |
+|---|---:|---:|---:|
+| cuBLAS SGEMM | 0.091 | 8896.3 GFLOP/s | 2.441406e-04 |
+| cuBLAS TensorOp FP16 | 0.031 | 26040.8 GFLOP/s | 6.962585e-02 |
+
+This confirms the row-major mapping path used in this repo is correct for both square and non-square GEMM.
+
+---
+
+## Kernel-Only vs End-to-End (Separation)
+
+Comparing kernel-only (Method 1) and end-to-end (Method 3, includes H2D + kernel + D2H) for the same custom tiled baseline:
+
+| N | Kernel-only (tiled) | End-to-end best pipeline | End-to-end GFLOP/s |
+|---:|---:|---|---:|
+| 512 | 1454.2 GFLOP/s | Pinned + 2 streams | 522.2 |
+| 1024 | 897.5 GFLOP/s | Pinned + 2 streams | 918.0 |
+| 2048 | 895.1 GFLOP/s | Pinned + CUDA graph | 830.1 |
+
+Takeaway: kernel-level speed does not directly translate to wall-clock throughput. Transfer path and overlap strategy can dominate, especially for smaller matrices.
+
+---
+
+## Profiling Status (Nsight Compute)
+
+Attempted one SGEMM profile and one TensorOp profile using `cublas_profile.cu`, but `ncu` failed on this system with:
+
+- `Cuda driver is not compatible with Nsight Compute`
+
+Planned follow-up once versions are aligned:
+
+1. Profile `sgemm` mode and capture achieved FLOPs + occupancy.
+2. Profile `tensorop` mode and capture tensor pipeline utilization.
+3. Add side-by-side metrics table in this file.

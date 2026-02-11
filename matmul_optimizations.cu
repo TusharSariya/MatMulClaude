@@ -32,8 +32,12 @@
         }                                                                     \
     } while (0)
 
+static inline double flops_gemm_mnk(int m, int n, int k) {
+    return 2.0 * (double)m * (double)n * (double)k;
+}
+
 static inline double flops_gemm(int n) {
-    return 2.0 * (double)n * (double)n * (double)n;
+    return flops_gemm_mnk(n, n, n);
 }
 
 static inline double gflops_from_ms(double flops, float ms) {
@@ -48,12 +52,31 @@ void fill_random(float *ptr, int n, unsigned seed) {
     }
 }
 
+void fill_random_total(float *ptr, int total, unsigned seed) {
+    srand(seed);
+    for (int i = 0; i < total; i++) {
+        ptr[i] = (float)rand() / (float)RAND_MAX;
+    }
+}
+
 void cpu_matmul_ref(const float *A, const float *B, float *C, int n) {
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < n; j++) {
             float sum = 0.0f;
             for (int k = 0; k < n; k++) {
                 sum += A[i * n + k] * B[k * n + j];
+            }
+            C[i * n + j] = sum;
+        }
+    }
+}
+
+void cpu_matmul_ref_mnk(const float *A, const float *B, float *C, int m, int n, int k) {
+    for (int i = 0; i < m; i++) {
+        for (int j = 0; j < n; j++) {
+            float sum = 0.0f;
+            for (int kk = 0; kk < k; kk++) {
+                sum += A[i * k + kk] * B[kk * n + j];
             }
             C[i * n + j] = sum;
         }
@@ -288,6 +311,11 @@ void launch_double_buffer(const float *A, const float *B, float *C, int n) {
     tiled_double_buffer<<<grid, block>>>(A, B, C, n);
 }
 
+float benchmark_cublas_sgemm_mnk(cublasHandle_t handle, const float *d_A, const float *d_B, float *d_C,
+                                 int m, int n, int k);
+float benchmark_cublas_tensorop_mnk(cublasHandle_t handle, const half *d_Ah, const half *d_Bh, half *d_Ch,
+                                    int m, int n, int k);
+
 float benchmark_kernel(KernelLaunchFn fn, const float *d_A, const float *d_B, float *d_C, int n) {
     cudaEvent_t start, stop;
     CUDA_CHECK(cudaEventCreate(&start));
@@ -313,21 +341,26 @@ float benchmark_kernel(KernelLaunchFn fn, const float *d_A, const float *d_B, fl
 }
 
 float benchmark_cublas_sgemm(cublasHandle_t handle, const float *d_A, const float *d_B, float *d_C, int n) {
+    return benchmark_cublas_sgemm_mnk(handle, d_A, d_B, d_C, n, n, n);
+}
+
+float benchmark_cublas_sgemm_mnk(cublasHandle_t handle, const float *d_A, const float *d_B, float *d_C,
+                                 int m, int n, int k) {
     float alpha = 1.0f, beta = 0.0f;
     cudaEvent_t start, stop;
     CUDA_CHECK(cudaEventCreate(&start));
     CUDA_CHECK(cudaEventCreate(&stop));
 
     for (int i = 0; i < WARMUP_ITERS; i++) {
-        CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, n, n, n,
-                                 &alpha, d_B, n, d_A, n, &beta, d_C, n));
+        CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, n, m, k,
+                                 &alpha, d_B, n, d_A, k, &beta, d_C, n));
     }
     CUDA_CHECK(cudaDeviceSynchronize());
 
     CUDA_CHECK(cudaEventRecord(start));
     for (int i = 0; i < MEASURE_ITERS; i++) {
-        CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, n, n, n,
-                                 &alpha, d_B, n, d_A, n, &beta, d_C, n));
+        CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, n, m, k,
+                                 &alpha, d_B, n, d_A, k, &beta, d_C, n));
     }
     CUDA_CHECK(cudaEventRecord(stop));
     CUDA_CHECK(cudaEventSynchronize(stop));
@@ -340,6 +373,11 @@ float benchmark_cublas_sgemm(cublasHandle_t handle, const float *d_A, const floa
 }
 
 float benchmark_cublas_tensorop(cublasHandle_t handle, const half *d_Ah, const half *d_Bh, half *d_Ch, int n) {
+    return benchmark_cublas_tensorop_mnk(handle, d_Ah, d_Bh, d_Ch, n, n, n);
+}
+
+float benchmark_cublas_tensorop_mnk(cublasHandle_t handle, const half *d_Ah, const half *d_Bh, half *d_Ch,
+                                    int m, int n, int k) {
     float alpha = 1.0f, beta = 0.0f;
     cudaEvent_t start, stop;
     CUDA_CHECK(cudaEventCreate(&start));
@@ -348,9 +386,9 @@ float benchmark_cublas_tensorop(cublasHandle_t handle, const half *d_Ah, const h
     CUBLAS_CHECK(cublasSetMathMode(handle, CUBLAS_TENSOR_OP_MATH));
     for (int i = 0; i < WARMUP_ITERS; i++) {
         CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
-                                  n, n, n, &alpha,
+                                  n, m, k, &alpha,
                                   d_Bh, CUDA_R_16F, n,
-                                  d_Ah, CUDA_R_16F, n,
+                                  d_Ah, CUDA_R_16F, k,
                                   &beta,
                                   d_Ch, CUDA_R_16F, n,
                                   CUDA_R_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
@@ -360,9 +398,9 @@ float benchmark_cublas_tensorop(cublasHandle_t handle, const half *d_Ah, const h
     CUDA_CHECK(cudaEventRecord(start));
     for (int i = 0; i < MEASURE_ITERS; i++) {
         CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
-                                  n, n, n, &alpha,
+                                  n, m, k, &alpha,
                                   d_Bh, CUDA_R_16F, n,
-                                  d_Ah, CUDA_R_16F, n,
+                                  d_Ah, CUDA_R_16F, k,
                                   &beta,
                                   d_Ch, CUDA_R_16F, n,
                                   CUDA_R_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
@@ -448,6 +486,77 @@ void run_method_1_and_2_and_4(int n) {
     half_to_float_kernel<<<blocks, threads>>>(d_Ch, d_C, total);
     CUDA_CHECK(cudaMemcpy(h_out, d_C, bytes, cudaMemcpyDeviceToHost));
     printf("  TensorOp max abs error: %.6e\n", max_abs_err(h_ref, h_out, total));
+
+    CUBLAS_CHECK(cublasDestroy(handle));
+    CUDA_CHECK(cudaFree(d_Ah));
+    CUDA_CHECK(cudaFree(d_Bh));
+    CUDA_CHECK(cudaFree(d_Ch));
+    CUDA_CHECK(cudaFree(d_A));
+    CUDA_CHECK(cudaFree(d_B));
+    CUDA_CHECK(cudaFree(d_C));
+    free(h_A);
+    free(h_B);
+    free(h_ref);
+    free(h_out);
+}
+
+void run_rectangular_cublas_validation(int m, int n, int k) {
+    size_t bytes_A = (size_t)m * k * sizeof(float);
+    size_t bytes_B = (size_t)k * n * sizeof(float);
+    size_t bytes_C = (size_t)m * n * sizeof(float);
+    int total_A = m * k;
+    int total_B = k * n;
+    int total_C = m * n;
+
+    float *h_A = (float *)malloc(bytes_A);
+    float *h_B = (float *)malloc(bytes_B);
+    float *h_ref = (float *)malloc(bytes_C);
+    float *h_out = (float *)malloc(bytes_C);
+    fill_random_total(h_A, total_A, 2026);
+    fill_random_total(h_B, total_B, 2027);
+
+    float *d_A, *d_B, *d_C;
+    CUDA_CHECK(cudaMalloc(&d_A, bytes_A));
+    CUDA_CHECK(cudaMalloc(&d_B, bytes_B));
+    CUDA_CHECK(cudaMalloc(&d_C, bytes_C));
+    CUDA_CHECK(cudaMemcpy(d_A, h_A, bytes_A, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_B, h_B, bytes_B, cudaMemcpyHostToDevice));
+
+    cublasHandle_t handle;
+    CUBLAS_CHECK(cublasCreate(&handle));
+
+    double flops = flops_gemm_mnk(m, n, k);
+    float ms_sgemm = benchmark_cublas_sgemm_mnk(handle, d_A, d_B, d_C, m, n, k);
+
+    half *d_Ah, *d_Bh, *d_Ch;
+    CUDA_CHECK(cudaMalloc(&d_Ah, total_A * sizeof(half)));
+    CUDA_CHECK(cudaMalloc(&d_Bh, total_B * sizeof(half)));
+    CUDA_CHECK(cudaMalloc(&d_Ch, total_C * sizeof(half)));
+    int threads = 256;
+    int blocks_A = (total_A + threads - 1) / threads;
+    int blocks_B = (total_B + threads - 1) / threads;
+    float_to_half_kernel<<<blocks_A, threads>>>(d_A, d_Ah, total_A);
+    float_to_half_kernel<<<blocks_B, threads>>>(d_B, d_Bh, total_B);
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    float ms_tensor = benchmark_cublas_tensorop_mnk(handle, d_Ah, d_Bh, d_Ch, m, n, k);
+
+    cpu_matmul_ref_mnk(h_A, h_B, h_ref, m, n, k);
+    CUDA_CHECK(cudaMemcpy(h_out, d_C, bytes_C, cudaMemcpyDeviceToHost));
+    float err_sgemm = max_abs_err(h_ref, h_out, total_C);
+
+    int blocks_C = (total_C + threads - 1) / threads;
+    half_to_float_kernel<<<blocks_C, threads>>>(d_Ch, d_C, total_C);
+    CUDA_CHECK(cudaMemcpy(h_out, d_C, bytes_C, cudaMemcpyDeviceToHost));
+    float err_tensor = max_abs_err(h_ref, h_out, total_C);
+
+    printf("\n=== Rectangular cuBLAS Validation (M=%d, N=%d, K=%d) ===\n", m, n, k);
+    printf("Row-major A(MxK) * B(KxN) -> C(MxN) via cuBLAS column-major mapping.\n");
+    printf("%-24s %10s %12s %14s\n", "Variant", "Time (ms)", "GFLOP/s", "Max Abs Error");
+    printf("%-24s %10.3f %12.1f %14.6e\n", "cuBLAS SGEMM", ms_sgemm,
+           gflops_from_ms(flops, ms_sgemm), err_sgemm);
+    printf("%-24s %10.3f %12.1f %14.6e\n", "cuBLAS TensorOp FP16", ms_tensor,
+           gflops_from_ms(flops, ms_tensor), err_tensor);
 
     CUBLAS_CHECK(cublasDestroy(handle));
     CUDA_CHECK(cudaFree(d_Ah));
@@ -604,10 +713,17 @@ void run_method_3_overlap(int n, int batches) {
 }
 
 int main(int argc, char **argv) {
-    int n = 1024;
+    int square_n = 1024;
     int batches = 8;
-    if (argc > 1) n = atoi(argv[1]);
+    int rect_m = 768, rect_n = 1024, rect_k = 512;
+
+    if (argc > 1) square_n = atoi(argv[1]);
     if (argc > 2) batches = atoi(argv[2]);
+    if (argc > 5) {
+        rect_m = atoi(argv[3]);
+        rect_n = atoi(argv[4]);
+        rect_k = atoi(argv[5]);
+    }
 
     cudaDeviceProp prop;
     CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
@@ -617,8 +733,9 @@ int main(int argc, char **argv) {
     // Warm up context.
     CUDA_CHECK(cudaFree(0));
 
-    run_method_1_and_2_and_4(n);
-    run_method_3_overlap(n, batches);
+    run_method_1_and_2_and_4(square_n);
+    run_method_3_overlap(square_n, batches);
+    run_rectangular_cublas_validation(rect_m, rect_n, rect_k);
 
     return 0;
 }

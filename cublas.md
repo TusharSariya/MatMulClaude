@@ -188,3 +188,62 @@ cuBLAS is so fast because it combines:
 - optional Tensor Core execution paths
 
 Your naive and shared-memory kernels are excellent for understanding fundamentals, but cuBLAS represents industrial-strength GEMM engineering on top of specialized hardware.
+
+---
+
+## 12) Row-Major Argument Pattern Used In This Repo
+
+Our host/device arrays are row-major (`A[MxK]`, `B[KxN]`, `C[MxN]`), while cuBLAS APIs are column-major.
+The practical mapping is:
+
+```c
+// Row-major target: C = A * B
+// Column-major cuBLAS call: C^T = B^T * A^T
+cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+            N, M, K,
+            &alpha, d_B, N,
+                    d_A, K,
+            &beta,  d_C, N);
+```
+
+TensorOp path follows the same dimension/leading-dimension mapping via `cublasGemmEx`.
+See `cublas_cookbook.md` for the compact checklist and troubleshooting flow.
+
+---
+
+## 13) Latest Sweep Snapshot (Same Hardware, New Run)
+
+Kernel-only (`matmul_optimizations.cu`, Method 1, custom tiled + cuBLAS):
+
+| N | Tiled baseline | cuBLAS SGEMM | cuBLAS TensorOp FP16 |
+|---:|---:|---:|---:|
+| 512 | 1454.2 GFLOP/s | 7322.5 GFLOP/s | 21487.2 GFLOP/s |
+| 1024 | 897.5 GFLOP/s | 6159.0 GFLOP/s | 28659.4 GFLOP/s |
+| 2048 | 895.1 GFLOP/s | 6608.9 GFLOP/s | 21159.3 GFLOP/s |
+
+Rectangular validation (`M=768, N=1024, K=512`):
+
+| Variant | Throughput | Max Abs Error vs CPU |
+|---|---:|---:|
+| cuBLAS SGEMM | 8896.3 GFLOP/s | 2.441406e-04 |
+| cuBLAS TensorOp FP16 | 26040.8 GFLOP/s | 6.962585e-02 |
+
+Pattern remains consistent: SGEMM is the high-fidelity fast baseline, and TensorOp is much faster with larger numeric drift due to FP16 input quantization.
+
+---
+
+## 14) Profiling Note (Nsight Compute)
+
+A profiling helper (`cublas_profile.cu`) was added so SGEMM and TensorOp can be profiled independently.
+On this machine, `ncu` launch currently fails with:
+
+- `Cuda driver is not compatible with Nsight Compute`
+
+Action: align GPU driver and Nsight Compute versions, then run:
+
+```bash
+ncu --set speedOfLight --target-processes all --kernel-name-base demangled --launch-count 1 ./cublas_profile sgemm 1024 1024 1024 20
+ncu --set speedOfLight --target-processes all --kernel-name-base demangled --launch-count 1 ./cublas_profile tensorop 1024 1024 1024 20
+```
+
+Once compatibility is fixed, compare tensor-pipe utilization and achieved FLOP metrics directly between the two paths.
