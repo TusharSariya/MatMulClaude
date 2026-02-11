@@ -17,6 +17,7 @@ CPU vs GPU matrix multiplication benchmarks, exploring performance differences a
 | `matmul_stress.cu` | Stress test — scales from 256 to 16384, auto-skips CPU when too slow |
 | `matmul_vram_limit.cu` | Finds the GPU's max matrix size before VRAM runs out |
 | `matmul_vram_narrow.cu` | Narrows down the exact VRAM breaking point |
+| `matmul_block_sweep.cu` | Tests block sizes 4x4 through 32x32 on naive + tiled kernels |
 | `results.md` | Full benchmark results and analysis |
 
 ## Building
@@ -40,6 +41,7 @@ gcc -O2 -fopenmp -o matmul_cpu_compare matmul_cpu_compare.c -lpthread -lm
 /usr/local/cuda-12.4/bin/nvcc -O2 -arch=sm_86 -o matmul_gpu matmul_gpu.cu
 /usr/local/cuda-12.4/bin/nvcc -O2 -arch=sm_86 -o matmul_bench matmul_bench.cu
 /usr/local/cuda-12.4/bin/nvcc -O2 -arch=sm_86 -o matmul_stress matmul_stress.cu
+/usr/local/cuda-12.4/bin/nvcc -O2 -arch=sm_86 -o matmul_block_sweep matmul_block_sweep.cu
 ```
 
 Change `-arch=sm_86` to match your GPU (e.g. `sm_75` for Turing, `sm_89` for Ada Lovelace).
@@ -55,12 +57,14 @@ Change `-arch=sm_86` to match your GPU (e.g. `sm_75` for Turing, `sm_89` for Ada
 ./matmul_bench        # CPU vs GPU comparison (256 to 2048)
 ./matmul_stress       # Full stress test up to 16384
 ./matmul_vram_limit   # Find GPU VRAM ceiling
+./matmul_block_sweep  # Block size sweep (4x4 to 32x32, naive + tiled)
 ```
 
 ## Results (RTX 3060 Ti, 8 GB)
 
 See [results.md](results.md) for full data. Highlights:
 
+- **16x16 block size is optimal** — 90–95% efficiency on tiled kernel across all matrix sizes
 - GPU tiled kernel: **~1,300 GFLOP/s** (consistent across sizes)
 - CPU single-threaded: **0.4–4.6 GFLOP/s**
 - CPU pthreads/OpenMP (20 threads): **4.7–25 GFLOP/s** (5–17x over single-threaded)
