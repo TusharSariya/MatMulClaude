@@ -20,6 +20,7 @@ CPU vs GPU matrix multiplication benchmarks, exploring performance differences a
 | `matmul_block_sweep.cu` | Tests block sizes 4x4 through 32x32 on naive + tiled kernels |
 | `matmul_cpu_simd.c` | AVX2+FMA SIMD matmul, single-threaded and OpenMP |
 | `matmul_profile.cu` | Minimal binary for GPU profiling with ncu |
+| `cpu.md` | Deep dive into scalar, pthreads, OpenMP, SIMD (AVX2+FMA) and why each is faster |
 | `cudaMemoryHierarchy.md` | Guide to GPU memory hierarchy, coalescing, bank conflicts, ILP, spilling |
 | `results.md` | Full benchmark results and analysis |
 
