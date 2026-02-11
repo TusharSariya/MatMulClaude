@@ -20,6 +20,9 @@ CPU vs GPU matrix multiplication benchmarks, exploring performance differences a
 | `matmul_block_sweep.cu` | Tests block sizes 4x4 through 32x32 on naive + tiled kernels |
 | `matmul_cpu_simd.c` | AVX2+FMA SIMD matmul, single-threaded and OpenMP |
 | `matmul_profile.cu` | Minimal binary for GPU profiling with ncu |
+| `matmul_optimizations.cu` | Advanced optimization study: cuBLAS/TensorOp, register tiling, double buffering, overlap, launch-bounds |
+| `tensoreCore.md` | Deep dive into Tensor Cores and why they outperform naive/tiled kernels |
+| `cublas.md` | Deep dive into cuBLAS internals and why library GEMM outperforms custom baselines |
 | `cpu.md` | Deep dive into scalar, pthreads, OpenMP, SIMD (AVX2+FMA) and why each is faster |
 | `cudaMemoryHierarchy.md` | Guide to GPU memory hierarchy, coalescing, bank conflicts, ILP, spilling |
 | `results.md` | Full benchmark results and analysis |
@@ -49,6 +52,7 @@ gcc -O2 -mavx2 -mfma -fopenmp -o matmul_cpu_simd matmul_cpu_simd.c -lm -lpthread
 /usr/local/cuda-12.4/bin/nvcc -O2 -arch=sm_86 -o matmul_bench matmul_bench.cu
 /usr/local/cuda-12.4/bin/nvcc -O2 -arch=sm_86 -o matmul_stress matmul_stress.cu
 /usr/local/cuda-12.4/bin/nvcc -O2 -arch=sm_86 -o matmul_block_sweep matmul_block_sweep.cu
+/usr/local/cuda-12.4/bin/nvcc -O3 -arch=sm_86 -o matmul_optimizations matmul_optimizations.cu -lcublas
 ```
 
 Change `-arch=sm_86` to match your GPU (e.g. `sm_75` for Turing, `sm_89` for Ada Lovelace).
@@ -66,6 +70,7 @@ Change `-arch=sm_86` to match your GPU (e.g. `sm_75` for Turing, `sm_89` for Ada
 ./matmul_vram_limit   # Find GPU VRAM ceiling
 ./matmul_block_sweep  # Block size sweep (4x4 to 32x32, naive + tiled)
 ./matmul_cpu_simd     # AVX2+FMA SIMD vs scalar (single-threaded and OpenMP)
+./matmul_optimizations 1024 8  # Methods 1-4: TensorOp/cuBLAS, kernel variants, and end-to-end overlap
 ```
 
 ## Results (RTX 3060 Ti, 8 GB)
@@ -81,6 +86,7 @@ See [results.md](results.md) for full data. Highlights:
 - GPU speedup vs scalar CPU: **~2,858x**
 - GPU max size: **22,528 x 22,528** (limited by VRAM)
 - CPU max practical size: **~4,096 x 4,096** (limited by O(N^3) time)
+- New optimization study includes Tensor Core/cuBLAS baselines and transfer-overlap pipelines (see `results.md`)
 
 ## License
 

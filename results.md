@@ -381,3 +381,103 @@ More registers per thread → fewer threads per SM → fewer warps to hide laten
 12. **The ~7% gap from theoretical peak** (1,300 vs ~1,400 GFLOP/s) is from warp scheduling overhead, instruction pipeline bubbles, and the serial dependency chain in `sum += a * b` limiting ILP within each warp.
 13. **AVX2+FMA SIMD is a game-changer for CPU.** Single-threaded SIMD (8 floats/op + fused multiply-add) delivers 13.5–34 GFLOP/s — a 13–32x speedup over scalar, far exceeding the theoretical 8x from wider registers alone thanks to better cache behavior from transposing B.
 14. **AVX2+FMA+OpenMP (20 threads) reaches 109–195 GFLOP/s** — a 256x improvement over scalar and brings the CPU within **11x of the GPU** at 4096x4096. The gap from 3,193x to 11x shows how much scalar code leaves on the table.
+
+---
+
+## New Optimization Experiments (Methods 1-4)
+
+All measurements below were run on the same RTX 3060 Ti setup using `matmul_optimizations.cu` with `N=1024`.
+Because the GPU was warm and clocks can drift run-to-run, treat values as directional rather than absolute.
+
+### Method 1: Tensor Core and cuBLAS baselines
+
+| Variant | Time (ms) | Throughput |
+|---|---:|---:|
+| Tiled baseline (custom FP32 kernel) | 2.509 | 855.9 GFLOP/s |
+| cuBLAS SGEMM (FP32) | 0.208 | 10,310.5 GFLOP/s |
+| cuBLAS TensorOp (FP16 in, FP32 accumulate) | 0.075 | 28,728.1 GFLOP/s |
+
+#### Why this is faster
+
+1. **Library kernels are macro-tiled and deeply pipelined.** cuBLAS uses architecture-specific kernels that do multi-level tiling (CTA tile -> warp tile -> instruction tile) and schedule data movement to keep Tensor Core pipelines fed.
+2. **Tensor Cores execute matrix fragments per instruction.** Instead of one FMA per lane, Tensor Core instructions perform MMA on matrix fragments, massively increasing FLOPs/cycle.
+3. **Better instruction mix and latency hiding.** Vendor kernels fuse pointer arithmetic, load scheduling, and math issue patterns tuned for Ampere scheduler behavior.
+4. **Tradeoff: accuracy.** FP16 TensorOp path showed larger absolute error than FP32 SGEMM (expected from reduced mantissa precision), but still often acceptable for ML workloads.
+
+Observed accuracy (max abs error vs CPU reference for this test):
+- SGEMM: `5.798e-04`
+- TensorOp FP16: `1.362e-01`
+
+---
+
+### Method 2: Double buffering + register tiling
+
+| Variant | Time (ms) | Throughput |
+|---|---:|---:|
+| Tiled baseline | 2.509 | 855.9 GFLOP/s |
+| Tiled double-buffer (shared-memory ping-pong) | 2.286 | 939.4 GFLOP/s |
+| Register tile 1x2 (two outputs/thread) | 2.117 | 1,014.5 GFLOP/s |
+
+#### Why this is faster
+
+1. **Double buffering reduces load/compute phase bubbles.** While one tile buffer is consumed, the next tile can be prepared in the alternate shared-memory buffer, reducing synchronization-driven dead time between phases.
+2. **Register tiling increases arithmetic intensity per loaded value.** In the 1x2 kernel, each `A` value contributes to two output accumulators (`sum0`, `sum1`), so bytes fetched per floating-point operation goes down.
+3. **Better reuse in on-chip memory.** Shared-memory `B` tile entries are reused by two accumulators per thread before eviction, increasing effective work per shared-memory access.
+4. **Lower address-generation overhead per output.** Loop/control instructions and index math are amortized across more output work in register-tiled kernels.
+
+---
+
+### Method 3: End-to-end overlap and transfer optimization
+
+Measured over 8 GEMM jobs (`N=1024`) including H2D + kernel + D2H:
+
+| Pipeline | Time (ms) | End-to-end Throughput |
+|---|---:|---:|
+| Pageable memcpy + sync | 23.722 | 724.2 GFLOP/s |
+| Pinned memcpy + sync | 21.256 | 808.3 GFLOP/s |
+| Pinned + 2 streams | 18.973 | 905.5 GFLOP/s |
+| Pinned + CUDA graph | 20.583 | 834.7 GFLOP/s |
+
+#### Why this is faster
+
+1. **Pinned memory removes extra staging/copy overhead.** Pageable memory copies often involve temporary pinned staging in the driver path; pre-pinned host buffers reduce that overhead.
+2. **Multi-streaming overlaps copy and compute.** With two streams and double-buffered device allocations, one job can transfer while another runs on the SMs, hiding PCIe latency behind kernel time.
+3. **Graph launch cuts CPU submission overhead.** Captured execution graphs reduce per-iteration launch setup; effect is workload-dependent and strongest when launch overhead is a large fraction of runtime.
+4. **Important practical point:** faster kernel-only timings do not guarantee faster wall-clock training/inference loops unless transfer path is co-optimized.
+
+---
+
+### Method 4: Resource tuning (register caps, launch bounds, vectorized loads)
+
+#### Register-cap sweep (`--maxrregcount`) for baseline tiled kernel
+
+| maxrregcount | ptxas regs/thread (baseline kernel) | Spill stores/loads | Time (ms) | GFLOP/s |
+|---:|---:|---:|---:|---:|
+| 32 | 32 | 0 / 0 | 2.239 | 959.2 |
+| 40 | 38 | 0 / 0 | 2.039 | 1,053.4 |
+| 48 | 40 | 0 / 0 | 2.342 | 917.1 |
+| 64 | 40 | 0 / 0 | 2.058 | 1,043.4 |
+
+#### In-kernel strategy comparison from the same harness
+
+| Variant | Time (ms) | GFLOP/s |
+|---|---:|---:|
+| Tiled baseline | 2.509 | 855.9 |
+| Tiled `__launch_bounds__(256,4)` | 2.171 | 988.9 |
+| Vec4 global loads | 2.465 | 871.3 |
+
+#### Why this is faster (or not)
+
+1. **Register caps tune compiler freedom vs occupancy constraints.** Too low a cap can force extra instructions or less favorable scheduling; too high can reduce resident warps if registers become limiting. The best point is hardware- and kernel-specific.
+2. **Launch bounds influence codegen goals.** `__launch_bounds__` gives the compiler occupancy targets, which can change unrolling and register allocation decisions. In this run, it improved baseline throughput.
+3. **Vectorized loads help only when memory path is the bottleneck and access is perfectly aligned/coalesced.** Here, vectorized load kernel did not outperform the best scalar-load tiled variant, likely because shared-memory synchronization/compute dependency chain dominates more than global load instruction count.
+4. **No spills in the sweep.** Since spill bytes remained zero, performance differences came from instruction scheduling/resource balance rather than catastrophic local-memory traffic.
+
+---
+
+## Practical Takeaways From Methods 1-4
+
+1. **Biggest upside comes from changing math engine, not micro-tuning.** Moving from custom FP32 kernels to Tensor Core kernels produced an order-of-magnitude jump.
+2. **Kernel-level improvements still matter for custom paths.** Register tiling and double buffering gave meaningful gains over a plain tiled kernel.
+3. **End-to-end optimization is mandatory.** Pinned memory + stream overlap significantly improved throughput over pageable synchronous flows.
+4. **Compiler/resource tuning has non-linear behavior.** Register caps and launch bounds can help or hurt depending on exact code shape and runtime conditions.
